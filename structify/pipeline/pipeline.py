@@ -1,0 +1,483 @@
+"""Main pipeline class for structify."""
+
+import pickle
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+from structify.core.config import Config
+from structify.preprocessing.splitter import PDFSplitter
+from structify.preprocessing.loader import PDFLoader
+from structify.schema.types import Schema
+from structify.schema.builder import SchemaBuilder
+from structify.schema.detector import SchemaDetector
+from structify.extractors.extractor import LLMExtractor
+from structify.providers.gemini import GeminiProvider
+from structify.progress.tracker import ProgressTracker
+from structify.progress.checkpoint import CheckpointManager
+from structify.state.manager import StateManager
+from structify.output.writers import OutputWriter
+from structify.utils.logging import get_logger, Logger
+
+logger = get_logger("pipeline")
+
+
+class Pipeline:
+    """
+    Sklearn-style pipeline for PDF data extraction.
+
+    Chains together preprocessing, schema detection, and extraction
+    steps into a single, easy-to-use interface.
+
+    Example:
+        >>> pipeline = Pipeline.quick_start()
+        >>> results = pipeline.fit_transform("my_pdfs/")
+        >>> results.to_csv("output.csv")
+    """
+
+    def __init__(
+        self,
+        steps: list[tuple[str, Any]] | None = None,
+        schema: Schema | None = None,
+        provider: GeminiProvider | None = None,
+        pages_per_chunk: int = 10,
+        auto_split: bool = True,
+        auto_detect_schema: bool = True,
+        deduplicate: bool = True,
+        enable_checkpoints: bool = True,
+        state_dir: str = ".structify_state",
+    ):
+        """
+        Initialize the pipeline.
+
+        Args:
+            steps: List of (name, transformer) tuples
+            schema: Pre-defined schema (skips detection if provided)
+            provider: LLM provider
+            pages_per_chunk: Pages per PDF chunk
+            auto_split: Automatically split large PDFs
+            auto_detect_schema: Automatically detect schema if not provided
+            deduplicate: Deduplicate extraction results
+            enable_checkpoints: Enable checkpoint/resume functionality
+            state_dir: Directory for state files
+        """
+        self.steps = steps or []
+        self._schema = schema
+        self.provider = provider
+        self.pages_per_chunk = pages_per_chunk
+        self.auto_split = auto_split
+        self.auto_detect_schema = auto_detect_schema
+        self.deduplicate = deduplicate
+        self.enable_checkpoints = enable_checkpoints
+        self.state_dir = state_dir
+
+        self._tracker: ProgressTracker | None = None
+        self._state_manager: StateManager | None = None
+        self._is_fitted = False
+        self._results: pd.DataFrame | None = None
+
+    @classmethod
+    def quick_start(
+        cls,
+        schema: Schema | None = None,
+        pages_per_chunk: int = 10,
+    ) -> "Pipeline":
+        """
+        Create a pipeline with sensible defaults.
+
+        Args:
+            schema: Optional pre-defined schema
+            pages_per_chunk: Pages per PDF chunk
+
+        Returns:
+            Configured pipeline
+        """
+        return cls(
+            schema=schema,
+            pages_per_chunk=pages_per_chunk,
+            auto_split=True,
+            auto_detect_schema=schema is None,
+            deduplicate=True,
+            enable_checkpoints=True,
+        )
+
+    @classmethod
+    def from_schema(cls, schema: Schema | str | Path, **kwargs) -> "Pipeline":
+        """
+        Create a pipeline with a specific schema.
+
+        Args:
+            schema: Schema object or path to schema file
+            **kwargs: Additional pipeline arguments
+
+        Returns:
+            Configured pipeline
+        """
+        if isinstance(schema, (str, Path)):
+            schema = Schema.load(schema)
+
+        return cls(schema=schema, auto_detect_schema=False, **kwargs)
+
+    @classmethod
+    def from_description(cls, description: str, **kwargs) -> "Pipeline":
+        """
+        Create a pipeline from a natural language description.
+
+        Args:
+            description: Natural language description of what to extract
+            **kwargs: Additional pipeline arguments
+
+        Returns:
+            Configured pipeline
+        """
+        builder = SchemaBuilder(provider=GeminiProvider())
+        schema = builder.from_description(description)
+
+        return cls(schema=schema, auto_detect_schema=False, **kwargs)
+
+    @classmethod
+    def resume(cls, input_path: str | Path, state_dir: str = ".structify_state") -> "Pipeline":
+        """
+        Resume a pipeline from a checkpoint.
+
+        Args:
+            input_path: Original input path
+            state_dir: State directory
+
+        Returns:
+            Pipeline configured to resume
+        """
+        checkpoint_manager = CheckpointManager(state_dir)
+        checkpoint = checkpoint_manager.find_checkpoint(str(input_path))
+
+        if checkpoint is None:
+            logger.warning("No checkpoint found, starting fresh")
+            return cls.quick_start()
+
+        logger.info(f"Resuming pipeline: {checkpoint.pipeline_id}")
+
+        pipeline = cls(
+            enable_checkpoints=True,
+            state_dir=state_dir,
+        )
+
+        # Load schema if saved
+        if checkpoint.schema_hash:
+            schema_file = Path(state_dir) / checkpoint.pipeline_id / "schema.yaml"
+            if schema_file.exists():
+                pipeline._schema = Schema.load(schema_file)
+                pipeline._is_fitted = True
+
+        return pipeline
+
+    @classmethod
+    def from_checkpoint(cls, checkpoint_dir: str | Path) -> "Pipeline":
+        """
+        Load a pipeline from a specific checkpoint directory.
+
+        Args:
+            checkpoint_dir: Path to checkpoint directory
+
+        Returns:
+            Loaded pipeline
+        """
+        checkpoint_dir = Path(checkpoint_dir)
+        checkpoint_manager = CheckpointManager(checkpoint_dir.parent)
+        checkpoint = checkpoint_manager.load(checkpoint_dir)
+
+        pipeline = cls(
+            enable_checkpoints=True,
+            state_dir=str(checkpoint_dir.parent),
+        )
+
+        # Load schema
+        schema_file = checkpoint_dir / "schema.yaml"
+        if schema_file.exists():
+            pipeline._schema = Schema.load(schema_file)
+            pipeline._is_fitted = True
+
+        return pipeline
+
+    def fit(
+        self,
+        data: str | Path,
+        schema: Schema | None = None,
+        **kwargs,
+    ) -> "Pipeline":
+        """
+        Fit the pipeline (detect or set schema).
+
+        Args:
+            data: Path to input documents
+            schema: Optional schema to use
+
+        Returns:
+            self
+        """
+        input_path = Path(data)
+
+        # Initialize components
+        self._initialize_components(input_path)
+
+        # Use provided schema or detect
+        if schema is not None:
+            self._schema = schema
+        elif self._schema is None and self.auto_detect_schema:
+            Logger.log_stage("Schema Detection", 1, 3)
+            detector = SchemaDetector(provider=self.provider)
+            detector.fit(str(input_path), tracker=self._tracker)
+            self._schema = detector.schema
+
+            # Save schema for resume
+            if self.enable_checkpoints and self._state_manager:
+                schema_file = (
+                    Path(self.state_dir)
+                    / self._state_manager.checkpoint.pipeline_id
+                    / "schema.yaml"
+                )
+                self._schema.save(schema_file)
+                self._state_manager.checkpoint_manager.set_schema_hash(
+                    self._schema.compute_hash()
+                )
+
+        self._is_fitted = True
+        return self
+
+    def transform(
+        self,
+        data: str | Path,
+        force_restart: bool = False,
+        **kwargs,
+    ) -> pd.DataFrame:
+        """
+        Transform documents (extract data).
+
+        Args:
+            data: Path to input documents
+            force_restart: If True, ignore checkpoints and start fresh
+
+        Returns:
+            DataFrame with extracted records
+        """
+        if not self._is_fitted:
+            raise ValueError("Pipeline must be fit before transform. Call fit() first.")
+
+        input_path = Path(data)
+
+        # Initialize if not already done
+        if self._state_manager is None:
+            self._initialize_components(input_path)
+
+        # Clear checkpoints if force restart
+        if force_restart and self._state_manager:
+            self._state_manager.clear_checkpoints()
+
+        # Split PDFs if needed
+        if self.auto_split:
+            Logger.log_stage("PDF Splitting", 2, 3)
+            self._split_pdfs(input_path)
+
+        # Extract data
+        Logger.log_stage("Data Extraction", 3, 3)
+        extractor = LLMExtractor(
+            schema=self._schema,
+            provider=self.provider,
+            deduplicate=self.deduplicate,
+        )
+        extractor._schema = self._schema
+        extractor._is_fitted = True
+        extractor.provider = self.provider
+        extractor._prompt_generator = extractor._prompt_generator or \
+            __import__('structify.extractors.prompt_generator', fromlist=['PromptGenerator']).PromptGenerator(self._schema)
+        extractor._validator = extractor._validator or \
+            __import__('structify.extractors.validator', fromlist=['ResponseValidator']).ResponseValidator(self._schema)
+
+        self._results = extractor.transform(
+            str(input_path),
+            tracker=self._tracker,
+            checkpoint_manager=self._state_manager.checkpoint_manager if self._state_manager else None,
+        )
+
+        # Cleanup
+        if self._tracker:
+            self._tracker.finish()
+
+        if self._state_manager:
+            self._state_manager.stop()
+
+        return self._results
+
+    def fit_transform(
+        self,
+        data: str | Path,
+        schema: Schema | None = None,
+        force_restart: bool = False,
+        **kwargs,
+    ) -> pd.DataFrame:
+        """
+        Fit and transform in one step.
+
+        Args:
+            data: Path to input documents
+            schema: Optional schema to use
+            force_restart: If True, ignore checkpoints
+
+        Returns:
+            DataFrame with extracted records
+        """
+        return self.fit(data, schema=schema).transform(data, force_restart=force_restart)
+
+    def _initialize_components(self, input_path: Path) -> None:
+        """Initialize pipeline components."""
+        # Initialize provider
+        if self.provider is None:
+            self.provider = GeminiProvider()
+        self.provider.ensure_initialized()
+
+        # Initialize state manager
+        if self.enable_checkpoints:
+            self._state_manager = StateManager(
+                state_dir=self.state_dir,
+                enable_checkpoints=True,
+            )
+            self._state_manager.start(input_path)
+
+        # Initialize progress tracker
+        self._tracker = ProgressTracker()
+
+    def _split_pdfs(self, input_path: Path) -> None:
+        """Split PDFs if needed."""
+        # Check if already split
+        if self._state_manager and self._state_manager.is_stage_completed("split"):
+            logger.info("PDF splitting already completed, skipping")
+            return
+
+        # Check if input is already split chunks
+        loader = PDFLoader()
+        docs = loader.load_directory(input_path)
+
+        # If any document has multiple chunks, assume already split
+        if any(doc.total_chunks > 1 for doc in docs):
+            logger.info("Documents appear to already be split")
+            if self._state_manager:
+                self._state_manager.complete_stage("split")
+            return
+
+        # Split PDFs
+        splitter = PDFSplitter(pages_per_chunk=self.pages_per_chunk)
+        splitter.fit(input_path)
+        splitter.transform(input_path, tracker=self._tracker)
+
+        if self._state_manager:
+            self._state_manager.complete_stage("split")
+
+    def set_params(self, **params) -> "Pipeline":
+        """
+        Set pipeline parameters using sklearn-style notation.
+
+        Example:
+            pipeline.set_params(
+                pages_per_chunk=5,
+                deduplicate=False,
+            )
+
+        Args:
+            **params: Parameter key-value pairs
+
+        Returns:
+            self
+        """
+        for key, value in params.items():
+            # Handle nested params (e.g., "split__pages_per_chunk")
+            if "__" in key:
+                step_name, param_name = key.split("__", 1)
+                for name, step in self.steps:
+                    if name == step_name:
+                        step.set_params(**{param_name: value})
+                        break
+            elif hasattr(self, key):
+                setattr(self, key, value)
+
+        return self
+
+    def get_params(self) -> dict[str, Any]:
+        """Get all pipeline parameters."""
+        return {
+            "pages_per_chunk": self.pages_per_chunk,
+            "auto_split": self.auto_split,
+            "auto_detect_schema": self.auto_detect_schema,
+            "deduplicate": self.deduplicate,
+            "enable_checkpoints": self.enable_checkpoints,
+            "state_dir": self.state_dir,
+        }
+
+    def save(self, path: str | Path) -> None:
+        """
+        Save the pipeline configuration.
+
+        Args:
+            path: Path to save the pipeline
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        save_data = {
+            "params": self.get_params(),
+            "schema": self._schema.to_dict() if self._schema else None,
+        }
+
+        with open(path, "wb") as f:
+            pickle.dump(save_data, f)
+
+        logger.info(f"Pipeline saved to {path}")
+
+    @classmethod
+    def load(cls, path: str | Path) -> "Pipeline":
+        """
+        Load a saved pipeline.
+
+        Args:
+            path: Path to the saved pipeline
+
+        Returns:
+            Loaded pipeline
+        """
+        path = Path(path)
+
+        with open(path, "rb") as f:
+            save_data = pickle.load(f)
+
+        pipeline = cls(**save_data["params"])
+
+        if save_data.get("schema"):
+            pipeline._schema = Schema.from_dict(save_data["schema"])
+            pipeline._is_fitted = True
+
+        logger.info(f"Pipeline loaded from {path}")
+        return pipeline
+
+    def save_checkpoint(self) -> None:
+        """Force save the current checkpoint."""
+        if self._state_manager:
+            self._state_manager.save_checkpoint()
+
+    def clear_checkpoints(self) -> None:
+        """Clear all checkpoints."""
+        if self._state_manager:
+            self._state_manager.clear_checkpoints()
+
+    @property
+    def schema(self) -> Schema | None:
+        """Get the current schema."""
+        return self._schema
+
+    @property
+    def results(self) -> pd.DataFrame | None:
+        """Get the last extraction results."""
+        return self._results
+
+    @property
+    def is_fitted(self) -> bool:
+        """Check if pipeline is fitted."""
+        return self._is_fitted

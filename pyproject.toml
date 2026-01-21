@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-structify"
+version = "0.1.0"
+description = "Extract structured data from PDFs using LLMs with sklearn-like API"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    {name = "Ahmed Dawood"}
+]
+keywords = ["pdf", "extraction", "llm", "gemini", "structured-data", "machine-learning", "data-extraction", "document-processing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: General",
+]
+
+dependencies = [
+    "google-generativeai>=0.8.0",
+    "pypdf>=4.0.0",
+    "rich>=13.0.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.0",
+    "pandas>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/ahmeddawood/pdf-structify"
+Documentation = "https://github.com/ahmeddawood/pdf-structify#readme"
+Repository = "https://github.com/ahmeddawood/pdf-structify"
+Issues = "https://github.com/ahmeddawood/pdf-structify/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["structify", "structify.*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml", "*.yml", "*.json"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
