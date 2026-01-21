@@ -1,5 +1,6 @@
 """Google Gemini provider for structify using new google.genai SDK."""
 
+import io
 import os
 import time
 from pathlib import Path
@@ -108,19 +109,37 @@ class GeminiProvider(BaseLLMProvider):
         logger.debug(f"Uploading file: {file_path}")
 
         try:
-            # Read file as bytes to avoid unicode filename issues
             path = Path(file_path)
-            file_bytes = path.read_bytes()
 
-            # Use the new SDK's file upload with bytes
+            # Read file as bytes and wrap in BytesIO to avoid unicode filename issues
+            # The SDK needs a file-like object, not raw bytes
+            file_bytes = path.read_bytes()
+            file_buffer = io.BytesIO(file_bytes)
+
+            # Create a safe ASCII display name
+            safe_name = path.name.encode('ascii', 'replace').decode('ascii')
+
+            # Use the new SDK's file upload with BytesIO
             file_ref = self._client.files.upload(
-                file=file_bytes,
+                file=file_buffer,
                 config=types.UploadFileConfig(
                     mime_type=mime_type,
-                    display_name=path.name.encode('ascii', 'replace').decode('ascii')
+                    display_name=safe_name
                 )
             )
+
+            # Wait for file to be processed
+            while file_ref.state.name == "PROCESSING":
+                logger.debug(f"Waiting for file {safe_name} to process...")
+                time.sleep(2)
+                file_ref = self._client.files.get(name=file_ref.name)
+
+            if file_ref.state.name == "FAILED":
+                raise ProviderError(f"File processing failed: {safe_name}")
+
             return file_ref
+        except ProviderError:
+            raise
         except Exception as e:
             if is_retryable_error(e):
                 error_class = classify_error(e)
