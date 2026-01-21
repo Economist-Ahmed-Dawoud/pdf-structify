@@ -6,6 +6,7 @@ from structify.schema.types import Schema, Field
 
 
 # Layer 1: Base prompt (immutable) - enforces strict JSON output
+# Note: Using double braces {{ }} to escape them from .format()
 BASE_PROMPT = """You are a data extraction assistant. Your task is to extract structured data from documents.
 
 ## CRITICAL OUTPUT REQUIREMENTS - READ CAREFULLY
@@ -25,7 +26,7 @@ BASE_PROMPT = """You are a data extraction assistant. Your task is to extract st
 - Any text that is not pure JSON
 
 ## VALID RESPONSE FORMAT:
-[{"field1": "value1", "field2": "value2"}, ...]
+[{{"field1": "value1", "field2": "value2"}}, ...]
 []
 
 ---

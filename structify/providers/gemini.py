@@ -1,10 +1,12 @@
-"""Google Gemini provider for structify."""
+"""Google Gemini provider for structify using new google.genai SDK."""
 
 import os
 import time
+from pathlib import Path
 from typing import Any
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from structify.providers.base import BaseLLMProvider
 from structify.core.config import Config
@@ -21,7 +23,7 @@ logger = get_logger("gemini")
 
 class GeminiProvider(BaseLLMProvider):
     """
-    Google Gemini API provider.
+    Google Gemini API provider using the new google.genai SDK.
 
     Handles all communication with the Gemini API including:
     - File uploads
@@ -74,32 +76,18 @@ class GeminiProvider(BaseLLMProvider):
             max_output_tokens=max_output_tokens,
         )
 
-        self._model_instance = None
-        self._generation_config = None
+        self._client: genai.Client | None = None
 
     def initialize(self) -> None:
-        """Initialize the Gemini API."""
+        """Initialize the Gemini API client."""
         if not self.api_key:
             raise ConfigurationError(
                 "Gemini API key not found. Set GEMINI_API_KEY environment variable "
                 "or pass api_key parameter."
             )
 
-        genai.configure(api_key=self.api_key)
-
-        # Create generation config
-        self._generation_config = {
-            "temperature": self.temperature,
-            "top_p": 1,
-            "top_k": 1,
-            "max_output_tokens": self.max_output_tokens,
-        }
-
-        # Create model instance
-        self._model_instance = genai.GenerativeModel(
-            model_name=self.model,
-            generation_config=self._generation_config,
-        )
+        # Create client with API key
+        self._client = genai.Client(api_key=self.api_key)
 
         self._is_initialized = True
         logger.info(f"Initialized Gemini provider with model: {self.model}")
@@ -120,7 +108,11 @@ class GeminiProvider(BaseLLMProvider):
         logger.debug(f"Uploading file: {file_path}")
 
         try:
-            file_ref = genai.upload_file(file_path, mime_type=mime_type)
+            # Use the new SDK's file upload
+            file_ref = self._client.files.upload(
+                file=Path(file_path),
+                config=types.UploadFileConfig(mime_type=mime_type)
+            )
             return file_ref
         except Exception as e:
             if is_retryable_error(e):
@@ -146,22 +138,29 @@ class GeminiProvider(BaseLLMProvider):
         self.ensure_initialized()
 
         # Build content
-        content = [prompt]
+        contents = [prompt]
         if file_ref is not None:
-            content = [prompt, file_ref]
+            contents = [file_ref, prompt]
+
+        # Generation config
+        config = types.GenerateContentConfig(
+            temperature=self.temperature,
+            max_output_tokens=self.max_output_tokens,
+        )
 
         # Call with retry logic
         last_exception = None
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                response = self._model_instance.generate_content(
-                    content,
-                    request_options={"timeout": self.timeout},
+                response = self._client.models.generate_content(
+                    model=self.model,
+                    contents=contents,
+                    config=config,
                 )
 
                 # Check for valid response
-                if not response.candidates or not response.candidates[0].content.parts:
+                if not response.text:
                     logger.warning(f"Empty response on attempt {attempt}/{self.max_retries}")
                     if attempt < self.max_retries:
                         time.sleep(self.between_calls_delay)
@@ -245,7 +244,10 @@ class GeminiProvider(BaseLLMProvider):
         self.ensure_initialized()
 
         try:
-            result = self._model_instance.count_tokens(text)
+            result = self._client.models.count_tokens(
+                model=self.model,
+                contents=text,
+            )
             return result.total_tokens
         except Exception as e:
             logger.warning(f"Failed to count tokens: {e}")

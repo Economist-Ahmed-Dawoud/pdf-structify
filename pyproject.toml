@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pdf-structify"
-version = "0.1.0"
+version = "0.1.1"
 description = "Extract structured data from PDFs using LLMs with sklearn-like API"
 readme = "README.md"
 license = "MIT"
@@ -26,7 +26,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "google-generativeai>=0.8.0",
+    "google-genai>=1.0.0",
     "pypdf>=4.0.0",
     "rich>=13.0.0",
     "pydantic>=2.0.0",
@@ -44,10 +44,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ahmeddawood/pdf-structify"
-Documentation = "https://github.com/ahmeddawood/pdf-structify#readme"
-Repository = "https://github.com/ahmeddawood/pdf-structify"
-Issues = "https://github.com/ahmeddawood/pdf-structify/issues"
+Homepage = "https://github.com/Economist-Ahmed-Dawoud/pdf-structify"
+Documentation = "https://github.com/Economist-Ahmed-Dawoud/pdf-structify#readme"
+Repository = "https://github.com/Economist-Ahmed-Dawoud/pdf-structify"
+Issues = "https://github.com/Economist-Ahmed-Dawoud/pdf-structify/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
