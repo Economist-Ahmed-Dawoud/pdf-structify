@@ -17,41 +17,119 @@ from structify.progress.tracker import ProgressTracker
 logger = get_logger("schema.detector")
 
 
-SCHEMA_DETECTION_PROMPT = """You are analyzing a document to detect what structured data can be extracted from it.
+SCHEMA_DETECTION_PROMPT = """You are an expert data analyst designing a schema to extract SUBSTANTIVE FINDINGS from documents.
 
-Examine this document and identify ALL fields that could be extracted as structured data.
+## YOUR GOAL
+Identify the CORE DATA that makes this document valuable - the actual findings, results, and measurements that someone would want to analyze in a spreadsheet or database.
 
-For each field you identify:
+## CRITICAL: What to Extract vs What to IGNORE
+
+### EXTRACT (Substantive Data):
+- **Quantitative results**: Statistics, coefficients, percentages, measurements, effect sizes
+- **Research findings**: Treatment effects, outcomes, impacts, estimates with confidence intervals
+- **Comparative data**: Before/after comparisons, treatment vs control, regional differences
+- **Categorical classifications**: Methodologies used, sectors studied, policy types
+- **Key identifiers**: Study IDs, time periods covered, geographic scope
+
+### IGNORE (Metadata/Noise - DO NOT create fields for these):
+- Bibliography/references (author names from citations, publication years of cited works)
+- Table of contents, page numbers, headers/footers
+- Acknowledgments, author affiliations, contact information
+- Abstract summaries (extract the actual data, not the summary)
+- Boilerplate text, copyright notices
+- Raw literature review content (unless it contains comparative data)
+
+## FEW-SHOT EXAMPLES
+
+### EXAMPLE 1: Research Paper on Economic Zones
+**BAD Schema** (extracts noise):
+```
+- author_name: "Names of authors" ❌ (metadata, not findings)
+- reference_year: "Year from bibliography" ❌ (citation metadata)
+- journal_title: "Where published" ❌ (not substantive data)
+```
+
+**GOOD Schema** (extracts findings):
+```
+- study_id: "Unique identifier like AuthorYear_N" ✓
+- zone_type: "Type of economic zone (SEZ, FTZ, EPZ)" ✓
+- outcome_variable: "What was measured (exports, employment, FDI)" ✓
+- estimate_value: "The coefficient or effect size" ✓
+- standard_error: "Standard error of estimate" ✓
+- methodology: "DID, IV, RDD, OLS" ✓
+- country_studied: "Country where zone is located" ✓
+- time_period: "Years covered by study" ✓
+- significance_level: "p<0.01, p<0.05, p<0.10, NS" ✓
+```
+
+### EXAMPLE 2: Financial Report
+**BAD Schema**:
+```
+- report_author: "Who wrote the report" ❌
+- page_number: "Page reference" ❌
+- section_title: "Section headers" ❌
+```
+
+**GOOD Schema**:
+```
+- company_name: "Company being analyzed" ✓
+- fiscal_year: "Year of the data" ✓
+- revenue: "Total revenue in USD" ✓
+- net_income: "Net income in USD" ✓
+- growth_rate: "Year-over-year growth percentage" ✓
+- profit_margin: "Profit margin percentage" ✓
+```
+
+### EXAMPLE 3: Survey Results
+**BAD Schema**:
+```
+- surveyor_name: "Who conducted survey" ❌
+- survey_date: "When survey was done" ❌
+```
+
+**GOOD Schema**:
+```
+- respondent_category: "Type of respondent (business, household)" ✓
+- sample_size: "Number of respondents" ✓
+- satisfaction_score: "Rating 1-5" ✓
+- response_rate: "Percentage who responded" ✓
+- key_finding: "Main result from the question" ✓
+```
+
+## FOCUS YOUR ANALYSIS ON:
+1. **Tables** - These almost always contain the substantive data
+2. **Results sections** - Where findings are reported
+3. **Data appendices** - Raw numbers and statistics
+4. **Executive summaries** - Only for the actual findings mentioned
+
+## YOUR TASK
+Analyze this document and identify fields for the SUBSTANTIVE DATA only.
+
+For each field:
 1. Give it a short, snake_case name
-2. Determine its type: string, integer, float, boolean, or categorical
-3. Write a brief description
-4. Decide if it's required (essential information) or optional
-5. For categorical fields, list the possible options you observe
+2. Type: string, integer, float, boolean, or categorical
+3. Brief description of what data it captures
+4. Required = true only if this is core data present in every record
+5. For categorical: list the options you observe
 
-Focus on:
-- Quantitative data (numbers, statistics, measurements)
-- Categorical information (types, categories, classifications)
-- Key entities (names, dates, locations)
-- Relationships and comparisons
-
-RESPOND WITH ONLY VALID JSON in this exact format:
+RESPOND WITH ONLY VALID JSON:
 {{
   "detected_fields": [
     {{
       "name": "field_name",
-      "type": "string",
-      "description": "Brief description",
+      "type": "string|integer|float|boolean|categorical",
+      "description": "What substantive data this captures",
       "required": true,
       "options": [],
-      "frequency": "how often this appears: always, often, sometimes, rarely"
+      "frequency": "always|often|sometimes|rarely"
     }}
   ],
-  "document_type": "Type of document (e.g., research paper, report, form)",
-  "suggested_focus": ["sections to focus on"],
-  "suggested_skip": ["sections to skip"]
+  "document_type": "research paper|financial report|survey|policy document|other",
+  "suggested_focus": ["tables", "results section", "specific sections with data"],
+  "suggested_skip": ["bibliography", "references", "acknowledgments", "sections without data"]
 }}
 
-Your response must be valid JSON only. No markdown, no explanation."""
+JSON only. No markdown code blocks. No explanations."""
 
 
 class SchemaDetector(BaseTransformer[str, Schema]):
