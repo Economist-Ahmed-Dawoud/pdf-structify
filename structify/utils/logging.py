@@ -11,6 +11,24 @@ from rich.logging import RichHandler
 from rich.theme import Theme
 
 
+def _is_notebook() -> bool:
+    """Check if running in a Jupyter notebook."""
+    try:
+        from IPython import get_ipython
+        shell = get_ipython()
+        if shell is None:
+            return False
+        shell_name = shell.__class__.__name__
+        if shell_name == 'ZMQInteractiveShell':
+            return True
+        return False
+    except (ImportError, NameError):
+        return False
+
+
+# Detect if in Jupyter
+_IN_NOTEBOOK = _is_notebook()
+
 # Custom theme for structify
 STRUCTIFY_THEME = Theme({
     "info": "cyan",
@@ -21,8 +39,8 @@ STRUCTIFY_THEME = Theme({
     "progress": "blue",
 })
 
-# Global console instance
-console = Console(theme=STRUCTIFY_THEME)
+# Global console instance - use force_terminal=False in notebooks to avoid markup
+console = Console(theme=STRUCTIFY_THEME, force_terminal=not _IN_NOTEBOOK)
 
 
 class StructifyFormatter(logging.Formatter):
@@ -101,14 +119,20 @@ class Logger:
             root_logger.removeHandler(handler)
         instance._handlers.clear()
 
-        # Console handler with rich formatting
-        console_handler = RichHandler(
-            console=console,
-            show_time=False,
-            show_path=False,
-            markup=True,
-            rich_tracebacks=True,
-        )
+        # Console handler - use simple handler in Jupyter, Rich in terminal
+        if _IN_NOTEBOOK:
+            # Simple handler for Jupyter - plain text output
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_handler.setFormatter(StructifyFormatter())
+        else:
+            # Rich handler for terminal
+            console_handler = RichHandler(
+                console=console,
+                show_time=False,
+                show_path=False,
+                markup=True,
+                rich_tracebacks=True,
+            )
         console_handler.setLevel(instance.console_level)
         root_logger.addHandler(console_handler)
         instance._handlers.append(console_handler)
@@ -159,30 +183,48 @@ class Logger:
             stage_num: Current stage number
             total_stages: Total number of stages
         """
-        console.print()
-        console.print(f"[stage]{'─' * 60}[/stage]")
-        console.print(f"[stage]Stage {stage_num}/{total_stages}: {stage_name}[/stage]")
-        console.print(f"[stage]{'─' * 60}[/stage]")
+        if _IN_NOTEBOOK:
+            print()
+            print("=" * 60)
+            print(f"  Stage {stage_num}/{total_stages}: {stage_name}")
+            print("=" * 60)
+        else:
+            console.print()
+            console.print(f"[stage]{'─' * 60}[/stage]")
+            console.print(f"[stage]Stage {stage_num}/{total_stages}: {stage_name}[/stage]")
+            console.print(f"[stage]{'─' * 60}[/stage]")
 
     @classmethod
     def log_success(cls, message: str) -> None:
         """Log a success message."""
-        console.print(f"[success]✓ {message}[/success]")
+        if _IN_NOTEBOOK:
+            print(f"✓ {message}")
+        else:
+            console.print(f"[success]✓ {message}[/success]")
 
     @classmethod
     def log_error(cls, message: str) -> None:
         """Log an error message."""
-        console.print(f"[error]✗ {message}[/error]")
+        if _IN_NOTEBOOK:
+            print(f"✗ {message}")
+        else:
+            console.print(f"[error]✗ {message}[/error]")
 
     @classmethod
     def log_warning(cls, message: str) -> None:
         """Log a warning message."""
-        console.print(f"[warning]⚠ {message}[/warning]")
+        if _IN_NOTEBOOK:
+            print(f"⚠ {message}")
+        else:
+            console.print(f"[warning]⚠ {message}[/warning]")
 
     @classmethod
     def log_info(cls, message: str) -> None:
         """Log an info message."""
-        console.print(f"[info]{message}[/info]")
+        if _IN_NOTEBOOK:
+            print(message)
+        else:
+            console.print(f"[info]{message}[/info]")
 
 
 def get_logger(name: str) -> logging.Logger:

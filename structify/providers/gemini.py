@@ -108,10 +108,17 @@ class GeminiProvider(BaseLLMProvider):
         logger.debug(f"Uploading file: {file_path}")
 
         try:
-            # Use the new SDK's file upload
+            # Read file as bytes to avoid unicode filename issues
+            path = Path(file_path)
+            file_bytes = path.read_bytes()
+
+            # Use the new SDK's file upload with bytes
             file_ref = self._client.files.upload(
-                file=Path(file_path),
-                config=types.UploadFileConfig(mime_type=mime_type)
+                file=file_bytes,
+                config=types.UploadFileConfig(
+                    mime_type=mime_type,
+                    display_name=path.name.encode('ascii', 'replace').decode('ascii')
+                )
             )
             return file_ref
         except Exception as e:
