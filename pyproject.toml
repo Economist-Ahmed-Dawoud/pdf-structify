@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pdf-structify"
-version = "0.1.17"
+version = "0.1.18"
 description = "Extract structured data from PDFs using LLMs with sklearn-like API"
 readme = "README.md"
 license = "MIT"

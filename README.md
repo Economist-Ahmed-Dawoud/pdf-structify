@@ -364,6 +364,18 @@ pdf-structify includes automatic retry logic:
 
 No configuration needed - it just works.
 
+## Tutorials
+
+Complete end-to-end tutorials are available in the `notebooks/` directory:
+
+| Tutorial | Description |
+|----------|-------------|
+| [01_quick_start.ipynb](notebooks/01_quick_start.ipynb) | Basic 3-line extraction, configuration, and saving results |
+| [02_research_findings.ipynb](notebooks/02_research_findings.ipynb) | Extracting from academic papers with `purpose="findings"` |
+| [03_policy_documents.ipynb](notebooks/03_policy_documents.ipynb) | Extracting from policy docs with `purpose="policies"` |
+| [04_advanced_configuration.ipynb](notebooks/04_advanced_configuration.ipynb) | Schema save/load, model selection, sampling, checkpoints |
+| [05_custom_schemas.ipynb](notebooks/05_custom_schemas.ipynb) | Building custom schemas with SchemaBuilder |
+
 ## Requirements
 
 - Python 3.10+
