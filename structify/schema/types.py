@@ -90,8 +90,9 @@ class Field:
 
         line = f"| {self.name} | {type_str} | {required_str} | {self.description}"
 
+        # Strong enforcement for categorical fields
         if self.options:
-            line += f" (one of: {', '.join(self.options)})"
+            line += f" **MUST be exactly one of: [{', '.join(self.options)}]**"
 
         return line + " |"
 

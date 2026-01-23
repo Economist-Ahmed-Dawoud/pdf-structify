@@ -79,6 +79,21 @@ class GeminiProvider(BaseLLMProvider):
 
         self._client: genai.Client | None = None
 
+    def _retry_api_call(self, func, *args, **kwargs):
+        """
+        Execute API call with 1 retry on error, 2-second delay.
+
+        Simple retry wrapper for API calls that don't have built-in retry logic.
+        On first error: log warning, wait 2 seconds, retry once.
+        On second failure: raise the exception.
+        """
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logger.warning(f"API error: {e}. Retrying in 2 seconds...")
+            time.sleep(2)
+            return func(*args, **kwargs)
+
     def initialize(self) -> None:
         """Initialize the Gemini API client."""
         if not self.api_key:
@@ -119,8 +134,9 @@ class GeminiProvider(BaseLLMProvider):
             # Create a safe ASCII display name
             safe_name = path.name.encode('ascii', 'replace').decode('ascii')
 
-            # Use the new SDK's file upload with BytesIO
-            file_ref = self._client.files.upload(
+            # Use the new SDK's file upload with BytesIO (with retry)
+            file_ref = self._retry_api_call(
+                self._client.files.upload,
                 file=file_buffer,
                 config=types.UploadFileConfig(
                     mime_type=mime_type,
@@ -256,6 +272,72 @@ class GeminiProvider(BaseLLMProvider):
         file_ref = self.upload_file(file_path, mime_type)
         time.sleep(self.between_calls_delay)
         return self.generate(prompt, file_ref)
+
+    def generate_with_files(
+        self,
+        prompt: str,
+        file_refs: list[Any],
+    ) -> str:
+        """
+        Generate a response with multiple files in one call.
+
+        Args:
+            prompt: The prompt to send
+            file_refs: List of file references from upload_file()
+
+        Returns:
+            The generated text response
+        """
+        self.ensure_initialized()
+
+        # Build contents: all files + prompt
+        contents = file_refs + [prompt]
+
+        config = types.GenerateContentConfig(
+            temperature=self.temperature,
+            max_output_tokens=self.max_output_tokens,
+        )
+
+        last_exception = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                response = self._client.models.generate_content(
+                    model=self.model,
+                    contents=contents,
+                    config=config,
+                )
+
+                if not response.text:
+                    logger.warning(f"Empty response on attempt {attempt}/{self.max_retries}")
+                    if attempt < self.max_retries:
+                        time.sleep(self.between_calls_delay)
+                        continue
+                    raise ProviderError("Empty response from Gemini API")
+
+                return response.text
+
+            except Exception as e:
+                last_exception = e
+                error_str = str(e).lower()
+
+                if "429" in str(e) or "quota" in error_str or "resource" in error_str:
+                    wait_time = self.retry_delay
+                    logger.warning(f"Rate limit hit, waiting {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+
+                if "504" in str(e) or "deadline" in error_str or "timeout" in error_str:
+                    wait_time = self.retry_delay * attempt
+                    logger.warning(f"Timeout on attempt {attempt}/{self.max_retries}, waiting {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+
+                logger.error(f"Gemini API error: {e}")
+                raise ProviderError(f"Gemini API error: {e}") from e
+
+        if last_exception:
+            raise ProviderError(f"All {self.max_retries} attempts failed") from last_exception
+        raise ProviderError("Generation failed with unknown error")
 
     def count_tokens(self, text: str) -> int:
         """

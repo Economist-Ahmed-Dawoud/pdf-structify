@@ -22,7 +22,7 @@ With custom schema:
     >>> results = pipeline.fit_transform("papers/")
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.17"
 __author__ = "Ahmed Dawood"
 
 # Core configuration
@@ -45,7 +45,7 @@ from structify.preprocessing.loader import PDFLoader, PDFDocument, PDFChunk
 # Schema
 from structify.schema.types import Schema, Field, FieldType
 from structify.schema.builder import SchemaBuilder
-from structify.schema.detector import SchemaDetector
+from structify.schema.detector import SchemaDetector, SchemaReviewer, ExtractionPurpose
 
 # Providers
 from structify.providers.gemini import GeminiProvider
@@ -93,6 +93,8 @@ __all__ = [
     "FieldType",
     "SchemaBuilder",
     "SchemaDetector",
+    "SchemaReviewer",
+    "ExtractionPurpose",
     # Providers
     "GeminiProvider",
     # Extractors

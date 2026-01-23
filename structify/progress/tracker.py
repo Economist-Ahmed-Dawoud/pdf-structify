@@ -208,15 +208,30 @@ class ProgressTracker:
     def _print_simple_progress(self, stage: StageProgress) -> None:
         """Print simple progress for Jupyter mode."""
         percent = int(stage.percentage)
-        # Only print at 10% intervals to reduce output
-        if percent >= self._last_print_percent + 10 or stage.completed == stage.total:
-            bar_width = 30
-            filled = int(bar_width * stage.completed / max(stage.total, 1))
-            bar = "█" * filled + "░" * (bar_width - filled)
-            print(f"\r  [{bar}] {stage.completed}/{stage.total} ({percent}%) - {stage.records_found} records", end="")
-            if stage.completed == stage.total:
-                print()  # New line at completion
-            self._last_print_percent = percent
+
+        # Print at 5% intervals or on first/last item for responsiveness
+        should_print = (
+            percent >= self._last_print_percent + 5 or
+            stage.completed == stage.total or
+            stage.completed == 1
+        )
+
+        if not should_print:
+            return
+
+        bar_width = 30
+        filled = int(bar_width * stage.completed / max(stage.total, 1))
+        bar = "█" * filled + "░" * (bar_width - filled)
+
+        line = f"  [{bar}] {stage.completed}/{stage.total} ({percent}%)"
+        line += f" - {stage.records_found} records"
+
+        if stage.completed == stage.total:
+            print(f"\r{line}")  # Final line with newline
+        else:
+            print(f"\r{line}", end="", flush=True)
+
+        self._last_print_percent = percent
 
     def update(
         self,
@@ -355,10 +370,16 @@ class ProgressTracker:
         """
         Log a substep message.
 
+        In simple mode (Jupyter), only show warnings and errors to reduce noise.
+
         Args:
             message: Message to log
             style: Style (info, success, warning, error)
         """
+        # In simple mode, only show warnings and errors
+        if self.simple_mode and style not in ("warning", "error"):
+            return
+
         if self.simple_mode:
             icons = {"info": "→", "success": "✓", "warning": "⚠", "error": "✗"}
             icon = icons.get(style, "→")

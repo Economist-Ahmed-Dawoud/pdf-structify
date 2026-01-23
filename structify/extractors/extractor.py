@@ -1,5 +1,6 @@
 """Main extraction classes for structify."""
 
+import random
 import time
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,9 @@ class LLMExtractor(BaseExtractor[str, pd.DataFrame]):
         deduplicate: bool = True,
         dedup_fields: list[str] | None = None,
         between_calls_delay: int = 3,
+        sample_ratio: float | None = None,
+        max_samples: int | None = None,
+        seed: int | None = None,
     ):
         """
         Initialize the extractor.
@@ -47,6 +51,9 @@ class LLMExtractor(BaseExtractor[str, pd.DataFrame]):
             deduplicate: Whether to deduplicate results
             dedup_fields: Fields to use for deduplication
             between_calls_delay: Delay between API calls in seconds
+            sample_ratio: Fraction of documents to sample (0.0-1.0), None for all
+            max_samples: Maximum number of documents to process, None for all
+            seed: Random seed for reproducible sampling
         """
         super().__init__(
             schema=schema,
@@ -60,6 +67,9 @@ class LLMExtractor(BaseExtractor[str, pd.DataFrame]):
         self.deduplicate = deduplicate
         self.dedup_fields = dedup_fields
         self.between_calls_delay = between_calls_delay
+        self.sample_ratio = sample_ratio
+        self.max_samples = max_samples
+        self.seed = seed
 
         self._prompt_generator: PromptGenerator | None = None
         self._validator: ResponseValidator | None = None
@@ -132,6 +142,12 @@ class LLMExtractor(BaseExtractor[str, pd.DataFrame]):
             logger.warning(f"No documents found in {data}")
             return pd.DataFrame()
 
+        # Apply sampling if configured
+        original_count = len(all_chunks)
+        all_chunks = self._sample_chunks(all_chunks)
+        if len(all_chunks) < original_count:
+            logger.info(f"Sampling enabled: {len(all_chunks)}/{original_count} documents selected")
+
         # Check for resume
         pending_chunks = all_chunks
         existing_records = []
@@ -139,6 +155,9 @@ class LLMExtractor(BaseExtractor[str, pd.DataFrame]):
         if checkpoint_manager:
             stage = checkpoint_manager.get_stage("extract")
             if stage and stage.last_completed_item:
+                # Load previously extracted records
+                existing_records = checkpoint_manager.load_partial_results()
+
                 # Get pending items
                 chunk_names = [c.path.name for c in all_chunks]
                 pending_names = checkpoint_manager.get_pending_items("extract", chunk_names)
@@ -148,7 +167,8 @@ class LLMExtractor(BaseExtractor[str, pd.DataFrame]):
 
                 logger.info(
                     f"Resuming extraction: {len(all_chunks) - len(pending_chunks)} "
-                    f"already processed, {len(pending_chunks)} remaining"
+                    f"already processed ({len(existing_records)} records), "
+                    f"{len(pending_chunks)} remaining"
                 )
 
         # Set up progress tracking
@@ -167,21 +187,27 @@ class LLMExtractor(BaseExtractor[str, pd.DataFrame]):
                 records = self._extract_chunk(chunk, tracker)
                 all_records.extend(records)
 
-                # Update checkpoint
+                # Update checkpoint AND save partial results
                 if checkpoint_manager:
+                    chunk_idx = pending_chunks.index(chunk)
+                    completed = len(all_chunks) - len(pending_chunks) + chunk_idx + 1
                     checkpoint_manager.update_stage(
                         "extract",
-                        completed_items=len(all_chunks) - len(pending_chunks) +
-                                       pending_chunks.index(chunk) + 1,
+                        completed_items=completed,
                         last_completed_item=chunk.path.name,
                         records_extracted=len(all_records),
                     )
+                    # Save records incrementally - survives shutdown
+                    checkpoint_manager.save_partial_results(all_records)
 
                 # Delay between calls
                 time.sleep(self.between_calls_delay)
 
             except KeyboardInterrupt:
-                logger.warning("Extraction interrupted")
+                logger.warning("Extraction interrupted - saving progress")
+                # Save current records before exiting
+                if checkpoint_manager and all_records:
+                    checkpoint_manager.save_partial_results(all_records)
                 break
             except Exception as e:
                 logger.error(f"Error extracting from {chunk.name}: {e}")
@@ -232,8 +258,6 @@ class LLMExtractor(BaseExtractor[str, pd.DataFrame]):
 
         if tracker:
             tracker.increment(records=len(records))
-            if records:
-                tracker.log_substep(f"Found {len(records)} records", style="success")
 
         return records
 
@@ -264,6 +288,42 @@ class LLMExtractor(BaseExtractor[str, pd.DataFrame]):
             logger.info(f"Deduplicated: {len(records)} -> {len(unique)} records")
 
         return unique
+
+    def _sample_chunks(self, chunks: list[PDFChunk]) -> list[PDFChunk]:
+        """
+        Sample chunks for extraction if sampling is enabled.
+
+        Args:
+            chunks: All available chunks
+
+        Returns:
+            Sampled chunks if sampling enabled, otherwise all chunks
+        """
+        if self.sample_ratio is None and self.max_samples is None:
+            return chunks  # No sampling
+
+        total = len(chunks)
+
+        if self.sample_ratio is not None:
+            sample_size = int(total * self.sample_ratio)
+        else:
+            sample_size = total
+
+        if self.max_samples is not None:
+            sample_size = min(sample_size, self.max_samples)
+
+        # Ensure at least 1 sample, at most total
+        sample_size = max(1, min(sample_size, total))
+
+        if sample_size >= total:
+            return chunks  # No sampling needed
+
+        if self.seed is not None:
+            rng = random.Random(self.seed)
+            logger.debug(f"Using seed {self.seed} for reproducible sampling")
+            return rng.sample(chunks, sample_size)
+
+        return random.sample(chunks, sample_size)
 
     def save(self, df: pd.DataFrame, path: str | Path, format: str = "csv") -> None:
         """

@@ -11,7 +11,7 @@ from structify.preprocessing.splitter import PDFSplitter
 from structify.preprocessing.loader import PDFLoader
 from structify.schema.types import Schema
 from structify.schema.builder import SchemaBuilder
-from structify.schema.detector import SchemaDetector
+from structify.schema.detector import SchemaDetector, SchemaReviewer, DetectionMode, ExtractionPurpose
 from structify.extractors.extractor import LLMExtractor
 from structify.providers.gemini import GeminiProvider
 from structify.progress.tracker import ProgressTracker
@@ -39,7 +39,7 @@ class Pipeline:
     def __init__(
         self,
         steps: list[tuple[str, Any]] | None = None,
-        schema: Schema | None = None,
+        schema: Schema | str | Path | None = None,
         provider: GeminiProvider | None = None,
         pages_per_chunk: int = 10,
         auto_split: bool = True,
@@ -47,48 +47,96 @@ class Pipeline:
         deduplicate: bool = True,
         enable_checkpoints: bool = True,
         state_dir: str = ".structify_state",
+        detection_mode: DetectionMode = "moderate",
+        purpose: ExtractionPurpose = "findings",
+        seed: int | None = None,
+        detection_model: str | None = None,
+        extraction_model: str | None = None,
+        extraction_sample_ratio: float | None = None,
+        extraction_max_samples: int | None = None,
     ):
         """
         Initialize the pipeline.
 
         Args:
             steps: List of (name, transformer) tuples
-            schema: Pre-defined schema (skips detection if provided)
-            provider: LLM provider
+            schema: Pre-defined schema - can be Schema object or path to JSON/YAML file.
+                If provided, skips schema detection (resume capability).
+            provider: LLM provider (default model if not using separate models)
             pages_per_chunk: Pages per PDF chunk
             auto_split: Automatically split large PDFs
             auto_detect_schema: Automatically detect schema if not provided
             deduplicate: Deduplicate extraction results
             enable_checkpoints: Enable checkpoint/resume functionality
             state_dir: Directory for state files
+            detection_mode: Schema detection mode - "strict" (UP TO 5-7 fields),
+                "moderate" (UP TO 7-12 fields), or "extended" (UP TO 12-20 fields)
+            purpose: What type of information to extract:
+                - "findings": Research findings, estimates, coefficients (default)
+                - "policies": Policies, incentives, decisions, interventions
+            seed: Random seed for reproducible sampling (both detection and extraction)
+            detection_model: Model to use for schema detection (e.g., "gemini-2.0-flash")
+            extraction_model: Model to use for data extraction (e.g., "gemini-2.5-pro")
+            extraction_sample_ratio: Fraction of documents to extract from (0.0-1.0)
+            extraction_max_samples: Maximum number of documents to extract from
         """
         self.steps = steps or []
-        self._schema = schema
         self.provider = provider
         self.pages_per_chunk = pages_per_chunk
         self.auto_split = auto_split
-        self.auto_detect_schema = auto_detect_schema
         self.deduplicate = deduplicate
         self.enable_checkpoints = enable_checkpoints
         self.state_dir = state_dir
+        self.detection_mode = detection_mode
+        self.purpose = purpose
+        self.seed = seed
+        self.detection_model = detection_model
+        self.extraction_model = extraction_model
+        self.extraction_sample_ratio = extraction_sample_ratio
+        self.extraction_max_samples = extraction_max_samples
+
+        # Handle schema - can be object or path to file
+        if isinstance(schema, (str, Path)):
+            self._schema = Schema.load(schema)
+            logger.info(f"Loaded schema from {schema}")
+            self.auto_detect_schema = False  # Don't detect if schema provided
+        else:
+            self._schema = schema
+            self.auto_detect_schema = auto_detect_schema if schema is None else False
 
         self._tracker: ProgressTracker | None = None
         self._state_manager: StateManager | None = None
-        self._is_fitted = False
+        self._is_fitted = self._schema is not None  # Pre-fitted if schema loaded
         self._results: pd.DataFrame | None = None
 
     @classmethod
     def quick_start(
         cls,
-        schema: Schema | None = None,
+        schema: Schema | str | Path | None = None,
         pages_per_chunk: int = 10,
+        detection_mode: DetectionMode = "moderate",
+        purpose: ExtractionPurpose = "findings",
+        seed: int | None = None,
+        detection_model: str | None = None,
+        extraction_model: str | None = None,
+        extraction_sample_ratio: float | None = None,
+        extraction_max_samples: int | None = None,
     ) -> "Pipeline":
         """
         Create a pipeline with sensible defaults.
 
         Args:
-            schema: Optional pre-defined schema
+            schema: Optional schema - can be Schema object or path to JSON/YAML
             pages_per_chunk: Pages per PDF chunk
+            detection_mode: Schema detection mode - "strict", "moderate", or
+                "extended" (these are maximum limits, not targets)
+            purpose: What to extract - "findings" (research results) or
+                "policies" (interventions, incentives, decisions)
+            seed: Random seed for reproducible sampling
+            detection_model: Model for schema detection (e.g., "gemini-2.0-flash")
+            extraction_model: Model for data extraction (e.g., "gemini-2.5-pro")
+            extraction_sample_ratio: Fraction of documents to extract from
+            extraction_max_samples: Maximum documents to extract from
 
         Returns:
             Configured pipeline
@@ -97,9 +145,15 @@ class Pipeline:
             schema=schema,
             pages_per_chunk=pages_per_chunk,
             auto_split=True,
-            auto_detect_schema=schema is None,
             deduplicate=True,
             enable_checkpoints=True,
+            detection_mode=detection_mode,
+            purpose=purpose,
+            seed=seed,
+            detection_model=detection_model,
+            extraction_model=extraction_model,
+            extraction_sample_ratio=extraction_sample_ratio,
+            extraction_max_samples=extraction_max_samples,
         )
 
     @classmethod
@@ -206,7 +260,11 @@ class Pipeline:
         **kwargs,
     ) -> "Pipeline":
         """
-        Fit the pipeline (detect or set schema).
+        Fit the pipeline (split PDFs and detect/set schema).
+
+        The flow is:
+        1. Split PDFs into chunks (if auto_split enabled)
+        2. Detect schema from 10% of chunks (max 10 files)
 
         Args:
             data: Path to input documents
@@ -220,12 +278,23 @@ class Pipeline:
         # Initialize components
         self._initialize_components(input_path)
 
-        # Use provided schema or detect
+        # Step 1: Split PDFs first (before schema detection)
+        if self.auto_split:
+            Logger.log_stage("PDF Splitting", 1, 3)
+            self._split_pdfs(input_path)
+
+        # Step 2: Use provided schema or detect from split chunks
         if schema is not None:
             self._schema = schema
         elif self._schema is None and self.auto_detect_schema:
-            Logger.log_stage("Schema Detection", 1, 3)
-            detector = SchemaDetector(provider=self.provider)
+            Logger.log_stage("Schema Detection", 2, 3)
+            detector = SchemaDetector(
+                provider=self._get_detection_provider(),
+                detection_mode=self.detection_mode,
+                purpose=self.purpose,
+                seed=self.seed,
+            )
+            # Now schema detection runs on the split chunks
             detector.fit(str(input_path), tracker=self._tracker)
             self._schema = detector.schema
 
@@ -253,6 +322,8 @@ class Pipeline:
         """
         Transform documents (extract data).
 
+        Note: PDF splitting is now done in fit(), not transform().
+
         Args:
             data: Path to input documents
             force_restart: If True, ignore checkpoints and start fresh
@@ -273,21 +344,20 @@ class Pipeline:
         if force_restart and self._state_manager:
             self._state_manager.clear_checkpoints()
 
-        # Split PDFs if needed
-        if self.auto_split:
-            Logger.log_stage("PDF Splitting", 2, 3)
-            self._split_pdfs(input_path)
-
-        # Extract data
+        # Extract data (PDFs already split in fit())
         Logger.log_stage("Data Extraction", 3, 3)
+        extraction_provider = self._get_extraction_provider()
         extractor = LLMExtractor(
             schema=self._schema,
-            provider=self.provider,
+            provider=extraction_provider,
             deduplicate=self.deduplicate,
+            sample_ratio=self.extraction_sample_ratio,
+            max_samples=self.extraction_max_samples,
+            seed=self.seed,
         )
         extractor._schema = self._schema
         extractor._is_fitted = True
-        extractor.provider = self.provider
+        extractor.provider = extraction_provider
         extractor._prompt_generator = extractor._prompt_generator or \
             __import__('structify.extractors.prompt_generator', fromlist=['PromptGenerator']).PromptGenerator(self._schema)
         extractor._validator = extractor._validator or \
@@ -313,6 +383,7 @@ class Pipeline:
         data: str | Path,
         schema: Schema | None = None,
         force_restart: bool = False,
+        selected_fields: list[str] | None = None,
         **kwargs,
     ) -> pd.DataFrame:
         """
@@ -322,11 +393,94 @@ class Pipeline:
             data: Path to input documents
             schema: Optional schema to use
             force_restart: If True, ignore checkpoints
+            selected_fields: Optional list of field names to keep after
+                schema detection. Use this to filter fields in one call.
 
         Returns:
             DataFrame with extracted records
         """
-        return self.fit(data, schema=schema).transform(data, force_restart=force_restart)
+        self.fit(data, schema=schema)
+
+        # Apply field selection if provided
+        if selected_fields:
+            self.select_fields(selected_fields)
+
+        return self.transform(data, force_restart=force_restart)
+
+    def get_schema_dict(self) -> dict[str, str]:
+        """
+        Get detected schema as {field_name: description} dict.
+
+        Use this to review the detected schema before extraction.
+        Then call select_fields() with the field names you want to keep.
+
+        Returns:
+            Dict mapping field names to their descriptions
+
+        Raises:
+            SchemaError: If pipeline not fitted yet
+
+        Example:
+            >>> pipeline.fit("papers/")
+            >>> schema = pipeline.get_schema_dict()
+            >>> print(schema)
+            {'estimate_value': 'The coefficient...', 'methodology': '...'}
+        """
+        if self._schema is None:
+            from structify.core.exceptions import SchemaError
+            raise SchemaError("No schema detected. Call fit() first.")
+        return SchemaReviewer.to_dict(self._schema)
+
+    def select_fields(self, field_names: list[str]) -> "Pipeline":
+        """
+        Filter schema to only include specified fields.
+
+        Call this after fit() and before transform() to select which
+        fields to extract.
+
+        Args:
+            field_names: List of field names to keep
+
+        Returns:
+            self (for chaining)
+
+        Raises:
+            SchemaError: If pipeline not fitted or invalid field names
+
+        Example:
+            >>> pipeline.fit("papers/")
+            >>> pipeline.select_fields(["estimate_value", "methodology"])
+            >>> results = pipeline.transform("papers/")
+        """
+        if self._schema is None:
+            from structify.core.exceptions import SchemaError
+            raise SchemaError("No schema detected. Call fit() first.")
+        self._schema = SchemaReviewer.select_fields(self._schema, field_names)
+        return self
+
+    def save_schema(self, path: str | Path) -> None:
+        """
+        Save detected schema to file for later reuse.
+
+        Allows resuming from the extraction step without re-running
+        schema detection. Supports JSON and YAML formats.
+
+        Args:
+            path: Output path (use .json or .yaml extension)
+
+        Raises:
+            ValueError: If no schema to save
+
+        Example:
+            >>> pipeline.fit(data_dir)
+            >>> pipeline.save_schema("my_schema.json")
+            >>> # Later:
+            >>> pipeline = Pipeline(schema="my_schema.json")
+        """
+        if self._schema is None:
+            raise ValueError("No schema to save. Call fit() first.")
+        self._schema.save(path)
+        logger.info(f"Schema saved to {path}")
 
     def _initialize_components(self, input_path: Path) -> None:
         """Initialize pipeline components."""
@@ -345,6 +499,22 @@ class Pipeline:
 
         # Initialize progress tracker
         self._tracker = ProgressTracker()
+
+    def _get_detection_provider(self) -> GeminiProvider:
+        """Get provider for schema detection (uses detection_model if set)."""
+        if self.detection_model:
+            provider = GeminiProvider(model=self.detection_model)
+            provider.ensure_initialized()
+            return provider
+        return self.provider
+
+    def _get_extraction_provider(self) -> GeminiProvider:
+        """Get provider for data extraction (uses extraction_model if set)."""
+        if self.extraction_model:
+            provider = GeminiProvider(model=self.extraction_model)
+            provider.ensure_initialized()
+            return provider
+        return self.provider
 
     def _split_pdfs(self, input_path: Path) -> None:
         """Split PDFs if needed."""
@@ -410,6 +580,13 @@ class Pipeline:
             "deduplicate": self.deduplicate,
             "enable_checkpoints": self.enable_checkpoints,
             "state_dir": self.state_dir,
+            "detection_mode": self.detection_mode,
+            "purpose": self.purpose,
+            "seed": self.seed,
+            "detection_model": self.detection_model,
+            "extraction_model": self.extraction_model,
+            "extraction_sample_ratio": self.extraction_sample_ratio,
+            "extraction_max_samples": self.extraction_max_samples,
         }
 
     def save(self, path: str | Path) -> None:

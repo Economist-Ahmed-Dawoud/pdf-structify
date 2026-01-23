@@ -7,6 +7,8 @@ from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Any
 
+import pandas as pd
+
 from structify.core.exceptions import CheckpointError
 from structify.utils.logging import get_logger
 
@@ -381,6 +383,57 @@ class CheckpointManager:
 
         self._checkpoint = None
         logger.info("Checkpoint cleared")
+
+    def get_partial_results_path(self) -> Path:
+        """Get path for partial results file."""
+        return self._get_checkpoint_dir() / "partial_results.csv"
+
+    def save_partial_results(self, records: list[dict]) -> None:
+        """
+        Save partial results to CSV file.
+
+        Overwrites the file each time (not append) to avoid duplicates.
+        This ensures extracted records survive shutdown.
+
+        Args:
+            records: List of extracted record dictionaries
+        """
+        if not records:
+            return
+
+        results_file = self.get_partial_results_path()
+        results_file.parent.mkdir(parents=True, exist_ok=True)
+
+        df = pd.DataFrame(records)
+        df.to_csv(results_file, index=False)
+
+        if self._checkpoint:
+            self._checkpoint.partial_results_file = str(results_file)
+            self.save()
+
+        logger.debug(f"Saved {len(records)} partial results to {results_file}")
+
+    def load_partial_results(self) -> list[dict]:
+        """
+        Load partial results from checkpoint.
+
+        Returns:
+            List of record dictionaries, or empty list if no results exist
+        """
+        if self._checkpoint is None:
+            return []
+
+        results_file = self.get_partial_results_path()
+        if not results_file.exists():
+            return []
+
+        try:
+            df = pd.read_csv(results_file)
+            logger.info(f"Loaded {len(df)} partial results from checkpoint")
+            return df.to_dict('records')
+        except Exception as e:
+            logger.warning(f"Failed to load partial results: {e}")
+            return []
 
     @property
     def checkpoint(self) -> Checkpoint | None:

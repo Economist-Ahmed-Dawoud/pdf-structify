@@ -6,17 +6,20 @@
 
 **Extract structured data from PDFs using LLMs with a scikit-learn-like API.**
 
-pdf-structify makes it easy to extract structured, tabular data from PDF documents using Large Language Models. It handles PDF splitting, schema detection, and data extraction with progress tracking and checkpoint/resume support.
+pdf-structify makes it easy to extract structured, tabular data from PDF documents using Large Language Models. It handles PDF splitting, schema detection, and data extraction with progress tracking, checkpoint/resume support, and intelligent sampling.
 
 ## Features
 
 - **Scikit-learn-like API**: Familiar `fit()`, `transform()`, `fit_transform()` interface
-- **Automatic Schema Detection**: Let the LLM analyze your documents and detect extractable fields
-- **Natural Language Schema Definition**: Describe what you want to extract in plain English
-- **Progress Bars**: Beautiful, informative progress tracking with `rich`
+- **Automatic Schema Detection**: LLM analyzes documents to detect extractable fields
+- **Purpose-Driven Extraction**: Optimized for "findings" (research data) or "policies" (policy documents)
+- **Detection Modes**: Strict, moderate, or extended field discovery
+- **Schema Save/Load**: Save detected schemas and resume from any point
+- **Model Selection**: Use different models for detection vs extraction
+- **Extraction Sampling**: Process a random sample of files for quick testing
 - **Checkpoint/Resume**: Never lose progress - automatically resume from interruptions
-- **Two-Layer Prompt System**: Strict JSON enforcement for reliable extraction
-- **PDF Splitting**: Automatically split large PDFs into manageable chunks
+- **Progress Bars**: Beautiful, informative progress tracking with `rich`
+- **Automatic Retry**: Built-in retry logic for API errors
 
 ## Installation
 
@@ -36,6 +39,26 @@ results = pipeline.fit_transform("my_pdfs/")
 results.to_csv("output.csv")
 ```
 
+### Research Findings Extraction
+
+```python
+from structify import Pipeline
+
+# Optimized for academic papers and research documents
+pipeline = Pipeline(purpose="findings")
+results = pipeline.fit_transform("research_papers/")
+```
+
+### Policy Document Extraction
+
+```python
+from structify import Pipeline
+
+# Optimized for policy documents, regulations, and official reports
+pipeline = Pipeline(purpose="policies")
+results = pipeline.fit_transform("policy_documents/")
+```
+
 ### From Natural Language Description
 
 ```python
@@ -53,7 +76,145 @@ pipeline = Pipeline.from_description("""
 results = pipeline.fit_transform("research_papers/")
 ```
 
-### With Custom Schema
+## Advanced Features
+
+### Schema Save/Load (Resume Capability)
+
+Save your detected schema and reuse it later - no need to re-run detection:
+
+```python
+from structify import Pipeline
+
+# First run: detect schema and save it
+pipeline = Pipeline(purpose="findings")
+pipeline.fit("documents/")
+pipeline.save_schema("my_schema.json")  # or .yaml
+results = pipeline.transform("documents/")
+
+# Later: load schema and skip detection entirely
+pipeline = Pipeline(schema="my_schema.json")
+pipeline.fit("documents/")  # Skips detection - instant!
+results = pipeline.transform("documents/")
+```
+
+You can also load and modify schemas programmatically:
+
+```python
+from structify import Pipeline, Schema
+
+# Load, inspect, and use
+schema = Schema.load("my_schema.json")
+print(schema.fields)
+
+pipeline = Pipeline(schema=schema)
+```
+
+### Model Selection (Detection vs Extraction)
+
+Use a fast model for schema detection and a powerful model for extraction:
+
+```python
+from structify import Pipeline
+
+pipeline = Pipeline(
+    purpose="findings",
+    detection_model="gemini-2.0-flash",   # Fast for detection
+    extraction_model="gemini-2.5-pro",    # Powerful for extraction
+)
+results = pipeline.fit_transform("documents/")
+```
+
+### Extraction Sampling
+
+Process only a subset of files for quick testing or cost control:
+
+```python
+from structify import Pipeline
+
+pipeline = Pipeline(
+    purpose="findings",
+    extraction_sample_ratio=0.2,    # Extract from 20% of files
+    extraction_max_samples=50,      # But no more than 50 files
+    seed=42,                        # Reproducible sampling
+)
+results = pipeline.fit_transform("documents/")
+```
+
+### Detection Modes
+
+Control how aggressively the schema detector discovers fields:
+
+```python
+from structify import Pipeline
+
+# Strict: Only essential, high-confidence fields
+pipeline = Pipeline(purpose="findings", detection_mode="strict")
+
+# Moderate (default): Balanced field discovery
+pipeline = Pipeline(purpose="findings", detection_mode="moderate")
+
+# Extended: Discover more fields, including less common ones
+pipeline = Pipeline(purpose="findings", detection_mode="extended")
+```
+
+### Complete Configuration Example
+
+```python
+from structify import Pipeline
+
+pipeline = Pipeline(
+    # Purpose and detection
+    purpose="findings",
+    detection_mode="moderate",
+
+    # Model selection
+    detection_model="gemini-2.0-flash",
+    extraction_model="gemini-2.5-pro",
+
+    # Sampling for detection
+    sample_ratio=0.1,
+    max_samples=30,
+
+    # Sampling for extraction
+    extraction_sample_ratio=0.5,
+    extraction_max_samples=100,
+
+    # Reproducibility
+    seed=42,
+
+    # Checkpointing
+    checkpoint=True,
+)
+
+# Fit (detect schema)
+pipeline.fit("documents/")
+pipeline.save_schema("schema.json")
+
+# Transform (extract data)
+results = pipeline.transform("documents/")
+results.to_csv("output.csv")
+```
+
+## Schema Detection
+
+### Purpose Modes
+
+**"findings"** - Optimized for research papers and academic documents:
+- Extracts: estimates, coefficients, p-values, methodologies, country/region, time periods
+- Mandatory fields: unit, value_unit, notes
+
+**"policies"** - Optimized for policy documents and official reports:
+- Extracts: policy names, types, sectors, implementing agencies, dates, targets
+- Mandatory fields: unit, value_unit, notes
+
+### Automatic Category Discovery
+
+For categorical fields, pdf-structify automatically:
+1. Discovers valid categories from your documents
+2. Uses concise, abbreviated names (e.g., "DID" not "Difference-in-Differences with controls")
+3. Enforces categories strictly during extraction
+
+## With Custom Schema
 
 ```python
 from structify import Pipeline, SchemaBuilder
@@ -76,16 +237,6 @@ pipeline = Pipeline.from_schema(schema)
 results = pipeline.fit_transform("annual_reports/")
 ```
 
-### Resume After Interruption
-
-```python
-from structify import Pipeline
-
-# If interrupted, just run again - automatically resumes!
-pipeline = Pipeline.resume("my_pdfs/")
-results = pipeline.transform("my_pdfs/")
-```
-
 ## Configuration
 
 ### Environment Variables
@@ -94,7 +245,7 @@ results = pipeline.transform("my_pdfs/")
 export GEMINI_API_KEY="your-api-key"
 ```
 
-### Or in Code
+### In Code
 
 ```python
 from structify import Config
@@ -107,7 +258,7 @@ Config.set(
 )
 ```
 
-### Or from .env File
+### From .env File
 
 ```python
 from structify import Config
@@ -117,6 +268,7 @@ Config.from_env()  # Loads from .env file
 ## Components
 
 ### PDFSplitter
+
 Split large PDFs into smaller chunks:
 
 ```python
@@ -127,23 +279,40 @@ splitter.transform("large_documents/", output_path="chunks/")
 ```
 
 ### SchemaDetector
-Automatically detect extractable fields:
+
+Automatically detect extractable fields with sampling:
 
 ```python
 from structify import SchemaDetector
 
-detector = SchemaDetector(sample_ratio=0.1, max_samples=30)
+detector = SchemaDetector(
+    purpose="findings",
+    detection_mode="moderate",
+    sample_ratio=0.1,
+    max_samples=30,
+    seed=42,
+)
 schema = detector.fit_transform("documents/")
 print(schema.fields)
+schema.save("detected_schema.json")
 ```
 
 ### LLMExtractor
-Extract data using a schema:
+
+Extract data using a schema with sampling:
 
 ```python
 from structify import LLMExtractor, Schema
 
-extractor = LLMExtractor(schema=my_schema, deduplicate=True)
+schema = Schema.load("my_schema.json")
+
+extractor = LLMExtractor(
+    schema=schema,
+    deduplicate=True,
+    sample_ratio=0.5,      # Process 50% of files
+    max_samples=100,       # But no more than 100
+    seed=42,
+)
 results = extractor.fit_transform("documents/")
 ```
 
@@ -158,6 +327,16 @@ pdf-structify provides beautiful progress bars:
 Processing papers ━━━━━━━━━━━━━━━━━ 45% 12/25 papers
   Current: "Economic_Study.pdf" part 3/8
   → Found 24 records
+```
+
+## Resume After Interruption
+
+```python
+from structify import Pipeline
+
+# If interrupted, just run again - automatically resumes!
+pipeline = Pipeline.resume("my_pdfs/")
+results = pipeline.transform("my_pdfs/")
 ```
 
 ## Output Formats
@@ -176,6 +355,15 @@ results.to_parquet("output.parquet")
 results.to_excel("output.xlsx")
 ```
 
+## API Retry
+
+pdf-structify includes automatic retry logic:
+- **API errors**: Automatic 1 retry with 2-second delay
+- **Rate limits**: Automatic backoff and retry
+- **Timeouts**: Automatic retry with increasing delays
+
+No configuration needed - it just works.
+
 ## Requirements
 
 - Python 3.10+
@@ -183,7 +371,7 @@ results.to_excel("output.xlsx")
 
 ## Dependencies
 
-- google-generativeai
+- google-genai
 - pypdf
 - rich
 - pydantic

@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from structify.schema.types import Schema, Field
+from structify.schema.types import Schema, Field, FieldType
 
 
 # Layer 1: Base prompt (immutable) - enforces strict JSON output
@@ -94,6 +94,22 @@ class PromptGenerator:
         for field in self.schema.fields:
             parts.append(field.to_prompt_line())
         parts.append("")
+
+        # Categorical constraints section - enforce exact options
+        categorical_fields = [
+            f for f in self.schema.fields
+            if f.type == FieldType.CATEGORICAL and f.options
+        ]
+        if categorical_fields:
+            parts.append("## CATEGORICAL FIELD CONSTRAINTS")
+            parts.append("")
+            parts.append("For the following fields, you MUST use EXACTLY one of the listed values.")
+            parts.append("Do NOT paraphrase, abbreviate differently, or use synonyms.")
+            parts.append("")
+            for field in categorical_fields:
+                options_str = ", ".join(f'"{opt}"' for opt in field.options)
+                parts.append(f"- **{field.name}**: Must be one of [{options_str}]")
+            parts.append("")
 
         # Domain context
         if self.context:
