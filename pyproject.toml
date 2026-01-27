@@ -12,7 +12,7 @@ requires-python = ">=3.10"
 authors = [
     {name = "Ahmed Dawood"}
 ]
-keywords = ["pdf", "extraction", "llm", "gemini", "structured-data", "machine-learning", "data-extraction", "document-processing"]
+keywords = ["pdf", "extraction", "llm", "gemini", "claude", "anthropic", "openrouter", "ollama", "local-llm", "structured-data", "machine-learning", "data-extraction", "document-processing"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -36,6 +36,24 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Provider-specific dependencies
+anthropic = [
+    "anthropic>=0.30.0",
+]
+openrouter = [
+    "openai>=1.0.0",
+    "tiktoken>=0.5.0",  # For token counting
+]
+ollama = [
+    "ollama>=0.3.0",
+]
+# All providers
+all = [
+    "anthropic>=0.30.0",
+    "openai>=1.0.0",
+    "tiktoken>=0.5.0",
+    "ollama>=0.3.0",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
