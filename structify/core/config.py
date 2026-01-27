@@ -21,8 +21,13 @@ class Config:
     gemini_api_key: str | None = None
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
+    openrouter_api_key: str | None = None
+
+    # Ollama settings (no API key required)
+    ollama_base_url: str = "http://localhost:11434"
 
     # Default provider settings
+    # Supported providers: gemini, anthropic, openrouter, ollama
     default_provider: str = "gemini"
     default_model: str = "gemini-2.0-flash"
 
@@ -123,6 +128,8 @@ class Config:
             "GEMINI_API_KEY": "gemini_api_key",
             "OPENAI_API_KEY": "openai_api_key",
             "ANTHROPIC_API_KEY": "anthropic_api_key",
+            "OPENROUTER_API_KEY": "openrouter_api_key",
+            "OLLAMA_BASE_URL": "ollama_base_url",
             "STRUCTIFY_PROVIDER": "default_provider",
             "STRUCTIFY_MODEL": "default_model",
             "STRUCTIFY_TIMEOUT": ("timeout", int),
@@ -197,7 +204,7 @@ class Config:
 
         # Don't save sensitive API keys
         config_dict = self.to_dict()
-        for key in ["gemini_api_key", "openai_api_key", "anthropic_api_key"]:
+        for key in ["gemini_api_key", "openai_api_key", "anthropic_api_key", "openrouter_api_key"]:
             if key in config_dict:
                 config_dict[key] = None
 

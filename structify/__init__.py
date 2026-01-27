@@ -49,6 +49,23 @@ from structify.schema.detector import SchemaDetector, SchemaReviewer, Extraction
 
 # Providers
 from structify.providers.gemini import GeminiProvider
+from structify.providers import get_provider
+
+# Optional providers (lazy loaded to avoid import errors)
+try:
+    from structify.providers.anthropic import AnthropicProvider
+except ImportError:
+    AnthropicProvider = None  # type: ignore
+
+try:
+    from structify.providers.openrouter import OpenRouterProvider
+except ImportError:
+    OpenRouterProvider = None  # type: ignore
+
+try:
+    from structify.providers.ollama import OllamaProvider
+except ImportError:
+    OllamaProvider = None  # type: ignore
 
 # Extractors
 from structify.extractors.extractor import LLMExtractor, MultiExtractor
@@ -97,6 +114,10 @@ __all__ = [
     "ExtractionPurpose",
     # Providers
     "GeminiProvider",
+    "AnthropicProvider",
+    "OpenRouterProvider",
+    "OllamaProvider",
+    "get_provider",
     # Extractors
     "LLMExtractor",
     "MultiExtractor",
@@ -127,10 +148,28 @@ def configure(**kwargs) -> Config:
 
     Example:
         >>> import structify
+        >>> # Configure with Gemini (default)
         >>> structify.configure(
         ...     gemini_api_key="your-api-key",
         ...     pages_per_chunk=10,
-        ...     log_level="INFO",
+        ... )
+        >>> # Configure with Anthropic Claude
+        >>> structify.configure(
+        ...     default_provider="anthropic",
+        ...     anthropic_api_key="your-api-key",
+        ...     default_model="claude-sonnet-4-20250514",
+        ... )
+        >>> # Configure with OpenRouter
+        >>> structify.configure(
+        ...     default_provider="openrouter",
+        ...     openrouter_api_key="your-api-key",
+        ...     default_model="anthropic/claude-sonnet-4",
+        ... )
+        >>> # Configure with Ollama (local)
+        >>> structify.configure(
+        ...     default_provider="ollama",
+        ...     ollama_base_url="http://localhost:11434",
+        ...     default_model="llama3.2",
         ... )
     """
     return Config.set(**kwargs)

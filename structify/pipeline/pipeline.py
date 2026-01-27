@@ -13,7 +13,7 @@ from structify.schema.types import Schema
 from structify.schema.builder import SchemaBuilder
 from structify.schema.detector import SchemaDetector, SchemaReviewer, DetectionMode, ExtractionPurpose
 from structify.extractors.extractor import LLMExtractor
-from structify.providers.gemini import GeminiProvider
+from structify.providers import BaseLLMProvider, get_provider
 from structify.progress.tracker import ProgressTracker
 from structify.progress.checkpoint import CheckpointManager
 from structify.state.manager import StateManager
@@ -40,7 +40,7 @@ class Pipeline:
         self,
         steps: list[tuple[str, Any]] | None = None,
         schema: Schema | str | Path | None = None,
-        provider: GeminiProvider | None = None,
+        provider: BaseLLMProvider | str | None = None,
         pages_per_chunk: int = 10,
         auto_split: bool = True,
         auto_detect_schema: bool = True,
@@ -62,7 +62,8 @@ class Pipeline:
             steps: List of (name, transformer) tuples
             schema: Pre-defined schema - can be Schema object or path to JSON/YAML file.
                 If provided, skips schema detection (resume capability).
-            provider: LLM provider (default model if not using separate models)
+            provider: LLM provider - can be a provider instance or provider name string:
+                - "gemini" (default), "anthropic"/"claude", "openrouter", "ollama"/"local"
             pages_per_chunk: Pages per PDF chunk
             auto_split: Automatically split large PDFs
             auto_detect_schema: Automatically detect schema if not provided
@@ -174,21 +175,24 @@ class Pipeline:
         return cls(schema=schema, auto_detect_schema=False, **kwargs)
 
     @classmethod
-    def from_description(cls, description: str, **kwargs) -> "Pipeline":
+    def from_description(cls, description: str, provider: str | None = None, **kwargs) -> "Pipeline":
         """
         Create a pipeline from a natural language description.
 
         Args:
             description: Natural language description of what to extract
+            provider: Provider name (gemini, anthropic, openrouter, ollama)
             **kwargs: Additional pipeline arguments
 
         Returns:
             Configured pipeline
         """
-        builder = SchemaBuilder(provider=GeminiProvider())
+        provider_name = provider or Config.get("default_provider") or "gemini"
+        provider_instance = get_provider(provider_name)
+        builder = SchemaBuilder(provider=provider_instance)
         schema = builder.from_description(description)
 
-        return cls(schema=schema, auto_detect_schema=False, **kwargs)
+        return cls(schema=schema, auto_detect_schema=False, provider=provider_instance, **kwargs)
 
     @classmethod
     def resume(cls, input_path: str | Path, state_dir: str = ".structify_state") -> "Pipeline":
@@ -486,7 +490,12 @@ class Pipeline:
         """Initialize pipeline components."""
         # Initialize provider
         if self.provider is None:
-            self.provider = GeminiProvider()
+            # Get provider from config
+            provider_name = Config.get("default_provider") or "gemini"
+            self.provider = get_provider(provider_name)
+        elif isinstance(self.provider, str):
+            # Provider name passed as string
+            self.provider = get_provider(self.provider)
         self.provider.ensure_initialized()
 
         # Initialize state manager
@@ -500,18 +509,22 @@ class Pipeline:
         # Initialize progress tracker
         self._tracker = ProgressTracker()
 
-    def _get_detection_provider(self) -> GeminiProvider:
+    def _get_detection_provider(self) -> BaseLLMProvider:
         """Get provider for schema detection (uses detection_model if set)."""
         if self.detection_model:
-            provider = GeminiProvider(model=self.detection_model)
+            # Get provider type from config or current provider
+            provider_name = Config.get("default_provider") or "gemini"
+            provider = get_provider(provider_name, model=self.detection_model)
             provider.ensure_initialized()
             return provider
         return self.provider
 
-    def _get_extraction_provider(self) -> GeminiProvider:
+    def _get_extraction_provider(self) -> BaseLLMProvider:
         """Get provider for data extraction (uses extraction_model if set)."""
         if self.extraction_model:
-            provider = GeminiProvider(model=self.extraction_model)
+            # Get provider type from config or current provider
+            provider_name = Config.get("default_provider") or "gemini"
+            provider = get_provider(provider_name, model=self.extraction_model)
             provider.ensure_initialized()
             return provider
         return self.provider
